@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <string_view>
+#include <thread>   // std::thread::hardware_concurrency（2026-10-11 DSH 修改）
+#include <mutex>    // std::mutex（2026-10-11 DSH 修改）
 
 extern "C"
 {
@@ -64,7 +66,16 @@ private:
     int videoStreamIndex{ 0 };
     int videoStreamWidth{};
     int videoStreamHeight{};
-    const int threadNumber{ 2 };
+    // 原值为固定 2 线程。直播流常为 1080p/60~70fps，每帧需 sws_scale + WeChatQRCode
+    // DNN 推理，2 个线程远跟不上，配合 tryStart（队列满即丢帧）会导致画面严重滞后，
+    // 抢码时"看到二维码"的时刻远晚于竞品。
+    // 改为按 CPU 核心数动态设置，上限 8，避免过多线程导致推理互相抢占。
+    // 2026-10-11 DSH 修改
+    const int threadNumber{ []() {
+        const unsigned hw = std::thread::hardware_concurrency();
+        const int n = (hw == 0) ? 4 : static_cast<int>(hw);
+        return (n < 4) ? 4 : ((n > 8) ? 8 : n);
+    }() };
     QThreadPool threadPool;
     std::atomic<bool> m_stop;
 };

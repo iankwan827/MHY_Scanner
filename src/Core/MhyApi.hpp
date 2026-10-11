@@ -7,6 +7,7 @@
 #include <sstream>
 #include <optional>
 #include <iostream>
+#include <chrono>   // cpr::Timeout 需要（2026-10-11 DSH 修改）
 
 #include <nlohmann/json.hpp>
 #include <cpr/cpr.h>
@@ -257,6 +258,9 @@ inline auto LoginByMobileCaptcha(const std::string_view actionType, const std::s
     return result;
 }
 
+// 抢码场景对时延极敏感：接口必须设置超时，否则一旦卡住会无限期等待（cpr 默认无超时）。
+// 超时后立即失败返回，让调用方可以尽快重试，而不是干等。
+// 2026-10-11 DSH 修改
 inline bool ScanQRLogin(const std::string_view url, const std::string_view ticket, GameType gameType)
 {
     const auto response = cpr::Post(
@@ -266,9 +270,15 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
             { "device", device_id },
             { "ticket", ticket } }
                        .dump() },
-        cpr::Header{ { "Content-Type", "application/json" } });
+        cpr::Header{ { "Content-Type", "application/json" } },
+        cpr::Timeout{ std::chrono::milliseconds(1500) },
+        cpr::ConnectTimeout{ std::chrono::milliseconds(1000) });
 
-    const auto j = nlohmann::json::parse(response.text);
+    const auto j = nlohmann::json::parse(response.text, nullptr, false);
+    if (j.is_discarded())
+    {
+        return false;
+    }
     return j.value("retcode", -1) == 0;
 }
 
@@ -282,9 +292,15 @@ inline bool ConfirmQRLogin(const std::string_view url, const std::string_view ui
             { "ticket", ticket },
             { "payload", { { "proto", "Account" }, { "raw", nlohmann::json{ { "uid", uid }, { "token", gameToken } }.dump() } } } }
                        .dump() },
-        cpr::Header{ { "Content-Type", "application/json" } });
+        cpr::Header{ { "Content-Type", "application/json" } },
+        cpr::Timeout{ std::chrono::milliseconds(2500) },
+        cpr::ConnectTimeout{ std::chrono::milliseconds(1000) });
 
-    const auto j = nlohmann::json::parse(response.text);
+    const auto j = nlohmann::json::parse(response.text, nullptr, false);
+    if (j.is_discarded())
+    {
+        return false;
+    }
     return j.value("retcode", -1) == 0;
 }
 

@@ -2,6 +2,8 @@
 
 #include <string>
 #include <string_view>
+#include <chrono>   // std::chrono::milliseconds（2026-10-11 DSH 修改）
+#include <thread>   // std::this_thread::sleep_for（2026-10-11 DSH 修改）
 
 #include "QRScanner.h"
 #include "MhyApi.hpp"
@@ -107,11 +109,32 @@ void QRCodeForStream::LoginOfficial()
                         mtx.unlock();
                         return;
                     }
-                    if (ScanQRLogin(scanUrl.data(), ticket, gameType))
+                    if (lastTicket == ticket)
+                    {
+                        mtx.unlock();
+                        return;
+                    }
+                    // 抢码是高并发竞争场景：接口偶发失败或超时很常见，失败一次就整体
+                    // 停止会直接丢掉这次机会。改为允许一次快速重试后再判定失败。
+                    // 2026-10-11 DSH 修改
+                    bool ok = ScanQRLogin(scanUrl.data(), ticket, gameType);
+                    if (!ok)
+                    {
+                        for (int attempt = 1; attempt < 3 && !ok; ++attempt)
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                            ok = ScanQRLogin(scanUrl.data(), ticket, gameType);
+                        }
+                    }
+                    if (ok)
                     {
                         lastTicket = ticket;
-                        nlohmann::json config = nlohmann::json::parse(m_config->getConfig());
-                        if (config["auto_login"])
+                        nlohmann::json config = nlohmann::json::parse(m_config->getConfig(), nullptr, false);
+                        if (config.is_discarded())
+                        {
+                            Q_EMIT loginResults(ScanRet::FAILURE_1);
+                        }
+                        else if (config.value("auto_login", false))
                         {
                             continueLastLogin();
                         }
@@ -190,11 +213,31 @@ void QRCodeForStream::LoginBH3BiliBili()
                         mtx.unlock();
                         return;
                     }
-                    if (ret = scanCheck(ticket); ret == ScanRet::SUCCESS)
+                    if (lastTicket == ticket)
+                    {
+                        mtx.unlock();
+                        return;
+                    }
+                    // 同 LoginOfficial：B服抢码失败也允许一次快速重试，避免偶发失败即放弃。
+                    // 2026-10-11 DSH 修改
+                    ret = scanCheck(ticket);
+                    if (ret != ScanRet::SUCCESS)
+                    {
+                        for (int attempt = 1; attempt < 5 && ret != ScanRet::SUCCESS; ++attempt)
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                            ret = scanCheck(ticket);
+                        }
+                    }
+                    if (ret == ScanRet::SUCCESS)
                     {
                         lastTicket = ticket;
-                        nlohmann::json config = nlohmann::json::parse(m_config->getConfig());
-                        if (config["auto_login"])
+                        nlohmann::json config = nlohmann::json::parse(m_config->getConfig(), nullptr, false);
+                        if (config.is_discarded())
+                        {
+                            Q_EMIT loginResults(ScanRet::FAILURE_1);
+                        }
+                        else if (config.value("auto_login", false))
                         {
                             continueLastLogin();
                         }
