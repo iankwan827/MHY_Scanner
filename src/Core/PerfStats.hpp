@@ -37,15 +37,22 @@ struct ScanPerfStats
     {
         if (fp == nullptr)
         {
-            fp = std::fopen("MHY_Scanner_perf.log", "a");
-            if (fp == nullptr)
+            // 用 fopen_s：项目在 MSVC 下启用 /sdl，C4996 会被当作错误（2026-10-11 DSH 修改）
+            if (fopen_s(&fp, "MHY_Scanner_perf.log", "a") != 0)
             {
+                fp = nullptr;
                 return;
             }
         }
         const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         char ts[32]{};
-        std::strftime(ts, sizeof(ts), "%H:%M:%S", std::localtime(&t));
+        struct tm tmBuf {};
+#ifdef _WIN32
+        localtime_s(&tmBuf, &t);
+#else
+        localtime_r(&t, &tmBuf);
+#endif
+        std::strftime(ts, sizeof(ts), "%H:%M:%S", &tmBuf);
         std::fprintf(fp, "\n[%s] ---- 耗时汇总 (avg / max / n, 单位 ms) ----\n", ts);
         for (int i = 0; i < 8; ++i)
         {
