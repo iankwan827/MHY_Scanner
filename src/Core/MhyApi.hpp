@@ -17,6 +17,7 @@
 #include "CryptoKit.h"
 #include "UtilString.hpp"
 #include "TimeStamp.hpp"
+#include "PerfStats.hpp"   // 耗时统计（2026-10-11 DSH 修改）
 
 static const std::string device_id{ CreateUUID::CreateUUID4() };
 static GameType loginType{ GameType::TearsOfThemis };
@@ -263,6 +264,8 @@ inline auto LoginByMobileCaptcha(const std::string_view actionType, const std::s
 // 2026-10-11 DSH 修改
 inline bool ScanQRLogin(const std::string_view url, const std::string_view ticket, GameType gameType)
 {
+    // 计时：scan 接口耗时（2026-10-11 DSH 修改）
+    const ScanPerfTimer _tScan(3);
     const auto response = cpr::Post(
         cpr::Url{ url },
         cpr::Body{ nlohmann::json{
@@ -284,6 +287,8 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
 
 inline bool ConfirmQRLogin(const std::string_view url, const std::string_view uid, const std::string_view gameToken, const std::string_view ticket, GameType gameType)
 {
+    // 计时：confirm 接口耗时（2026-10-11 DSH 修改）
+    const ScanPerfTimer _tConfirm(4);
     const auto response = cpr::Post(
         cpr::Url{ url },
         cpr::Body{ nlohmann::json{

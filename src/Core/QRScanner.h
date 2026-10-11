@@ -5,6 +5,8 @@
 #include <opencv2/wechat_qrcode.hpp>
 #include <opencv2/opencv.hpp>
 
+#include "PerfStats.hpp"
+
 class QRScanner
 {
 public:

@@ -77,8 +77,12 @@ void QRCodeForStream::LoginOfficial()
             cv::Mat img(videoStreamHeight, videoStreamWidth, CV_8UC3);
             uint8_t* dstData[1] = { img.data };
             const int dstLinesize[1] = { static_cast<int>(img.step) };
-            sws_scale(pSwsContext, pAVFrame->data, pAVFrame->linesize, 0, pAVFrame->height,
-                      dstData, dstLinesize);
+            {
+                // 计时：色彩转换 + 缩放（2026-10-11 DSH 修改）
+                const ScanPerfTimer _tScale(2);
+                sws_scale(pSwsContext, pAVFrame->data, pAVFrame->linesize, 0, pAVFrame->height,
+                          dstData, dstLinesize);
+            }
 #ifndef SHOW
             cv::imshow("Video_Stream", img);
             cv::waitKey(1);
@@ -183,8 +187,12 @@ void QRCodeForStream::LoginBH3BiliBili()
             cv::Mat img(videoStreamHeight, videoStreamWidth, CV_8UC3);
             uint8_t* dstData[1] = { img.data };
             const int dstLinesize[1] = { static_cast<int>(img.step) };
-            sws_scale(pSwsContext, pAVFrame->data, pAVFrame->linesize, 0, pAVFrame->height,
-                      dstData, dstLinesize);
+            {
+                // 计时：色彩转换 + 缩放（2026-10-11 DSH 修改）
+                const ScanPerfTimer _tScale(2);
+                sws_scale(pSwsContext, pAVFrame->data, pAVFrame->linesize, 0, pAVFrame->height,
+                          dstData, dstLinesize);
+            }
 #ifndef SHOW
             cv::imshow("Video_Stream", img);
             cv::waitKey(1);
@@ -298,6 +306,8 @@ void QRCodeForStream::setUrl(const std::string& url, const std::map<std::string,
 
 auto QRCodeForStream::init() -> bool
 {
+    // 计时：打开直播流 + 探测流信息的耗时（2026-10-11 DSH 修改）
+    const ScanPerfTimer _tOpenStream(0);
     pAVFormatContext = avformat_alloc_context();
     if (avformat_open_input(&pAVFormatContext, streamUrl.c_str(), NULL, &pAvdictionary) != 0)
     {

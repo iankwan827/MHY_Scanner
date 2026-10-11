@@ -18,19 +18,13 @@ QRScanner::~QRScanner()
 
 void QRScanner::decodeSingle(const cv::Mat& img, std::string& qrCode)
 {
-#ifndef TESTSPEED
-    auto startTime = std::chrono::high_resolution_clock::now();
-#endif
+    // 计时：DNN 识别耗时（2026-10-11 DSH 修改）
+    const ScanPerfTimer _t(1);
     const std::vector<std::string>& strDecoded = detector->detectAndDecode(img);
     if (strDecoded.size() > 0)
     {
         qrCode = strDecoded[0];
     }
-#ifndef TESTSPEED
-    auto endTime = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
-    std::cout << static_cast<float>(duration) / 1000000 << " decode: " << qrCode << std::endl;
-#endif
 }
 
 void QRScanner::decodeMultiple(const cv::Mat& img, std::string& qrCode)
