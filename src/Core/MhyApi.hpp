@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <string>
 #include <string_view>
@@ -8,6 +8,7 @@
 #include <optional>
 #include <iostream>
 #include <chrono>   // cpr::Timeout 需要（2026-10-11 DSH 修改）
+#include <cstdio>   // fopen_s/fprintf 诊断日志（2026-10-14 DSH 修改）
 
 #include <nlohmann/json.hpp>
 #include <cpr/cpr.h>
@@ -166,7 +167,30 @@ inline std::tuple<int, std::string> GetGameTokenByStoken(
             { "stoken", stoken.data() },
             { "mid", mid.data() } });
 
-    const auto j = nlohmann::json::parse(response.text);
+    // 诊断日志（2026-10-14 DSH）：把服务器的真实返回写进文件。
+    // 之前失败只弹「登录状态失效」，看不到 retcode，无法区分
+    // 「令牌失效 / 请求被拒 / 限流 / 空响应」。
+    {
+        FILE* fp = nullptr;
+        if (fopen_s(&fp, "MHY_token_error.log", "a") == 0 && fp != nullptr)
+        {
+            std::fprintf(fp,
+                         "status=%ld  curl_code=%d  text_len=%zu\n  text=[%s]\n  stoken_len=%zu  mid=[%s]\n\n",
+                         static_cast<long>(response.status_code),
+                         static_cast<int>(response.error.code),
+                         response.text.size(),
+                         response.text.substr(0, 500).c_str(),
+                         stoken.size(),
+                         mid.data());
+            std::fclose(fp);
+        }
+    }
+
+    const auto j = nlohmann::json::parse(response.text, nullptr, false);
+    if (j.is_discarded())
+    {
+        return { -999, {} };   // 响应不是 JSON（空响应/超时/被拦），单独标记
+    }
     const int retcode = j.value("retcode", -1);
 
     if (retcode != 0)
@@ -259,9 +283,10 @@ inline auto LoginByMobileCaptcha(const std::string_view actionType, const std::s
     return result;
 }
 
-// 抢码场景对时延极敏感：接口必须设置超时，否则一旦卡住会无限期等待（cpr 默认无超时）。
-// 超时后立即失败返回，让调用方可以尽快重试，而不是干等。
-// 2026-10-11 DSH 修改
+// 抢码场景接口超时：设成「防死等」而不是「逼失败」。
+// 2026-10-11 初版设为 1500ms/2500ms —— 太激进，网络稍慢就超时，
+// 超时后 response.text 为空 → 解析丢弃 → 直接返回 false → 扫码失败。
+// 2026-10-14 放宽到 10s/15s，保留防死等能力但不会误杀正常请求。
 inline bool ScanQRLogin(const std::string_view url, const std::string_view ticket, GameType gameType)
 {
     // 计时：scan 接口耗时（2026-10-11 DSH 修改）
@@ -274,8 +299,8 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
             { "ticket", ticket } }
                        .dump() },
         cpr::Header{ { "Content-Type", "application/json" } },
-        cpr::Timeout{ std::chrono::milliseconds(1500) },
-        cpr::ConnectTimeout{ std::chrono::milliseconds(1000) });
+        cpr::Timeout{ std::chrono::milliseconds(10000) },
+        cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
 
     const auto j = nlohmann::json::parse(response.text, nullptr, false);
     if (j.is_discarded())
@@ -298,8 +323,8 @@ inline bool ConfirmQRLogin(const std::string_view url, const std::string_view ui
             { "payload", { { "proto", "Account" }, { "raw", nlohmann::json{ { "uid", uid }, { "token", gameToken } }.dump() } } } }
                        .dump() },
         cpr::Header{ { "Content-Type", "application/json" } },
-        cpr::Timeout{ std::chrono::milliseconds(2500) },
-        cpr::ConnectTimeout{ std::chrono::milliseconds(1000) });
+        cpr::Timeout{ std::chrono::milliseconds(15000) },
+        cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
 
     const auto j = nlohmann::json::parse(response.text, nullptr, false);
     if (j.is_discarded())
