@@ -211,8 +211,9 @@ void WindowMain::pBtstartScreen(bool clicked)
         {
             std::string stoken = userinfo["account"][countA]["access_key"];
             std::string uid = userinfo["account"][countA]["uid"];
-            // 2026-10-14 DSH 修正：正确接口需要 uid（不是 mid）
-            auto [code, game_token] = GetCookieTokenByStoken(stoken, uid);
+            std::string mid = userinfo["account"][countA]["mid"];
+            // 2026-10-14 DSH 修正：改用正确的 cookie_by_stoken 接口（参数 stoken+mid）
+            auto [code, game_token] = GetCookieTokenByStoken(stoken, mid);
             if (code != 0)
             {
                 emit AccountError();
@@ -274,8 +275,9 @@ void WindowMain::pBtStream(bool clicked)
         {
             std::string stoken = userinfo["account"][countA]["access_key"];
             std::string uid = userinfo["account"][countA]["uid"];
-            // 2026-10-14 DSH 修正：正确接口需要 uid（不是 mid）
-            auto [code, game_token] = GetCookieTokenByStoken(stoken, uid);
+            std::string mid = userinfo["account"][countA]["mid"];
+            // 2026-10-14 DSH 修正：改用正确的 cookie_by_stoken 接口（参数 stoken+mid）
+            auto [code, game_token] = GetCookieTokenByStoken(stoken, mid);
             if (code != 0)
             {
                 emit AccountError();

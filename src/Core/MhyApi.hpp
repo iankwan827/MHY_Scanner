@@ -160,26 +160,28 @@ inline std::tuple<int, std::string, std::string> GetStokenByGameToken(
 // SToken -> Cookie Token
 //
 // 2026-10-14 DSH 修正：原实现用 GET /auth/api/getGameToken 传 stoken+mid，
-// 该接口对 v2 SToken（形如 v2_xxx.CAE=）会返回 retcode=-1
+// 该接口对 v2 SToken（形如 v2_xxx.CAE=）返回 retcode=-1
 // "decode err response body error: unexpected end of JSON input"，
-// 导致「点开启监控 → 弹登录状态失效」，而真实原因（令牌是否有效）被掩盖。
+// 导致「点开启监控 → 弹登录状态失效」，真实原因被掩盖。
 //
 // 正确接口：GET /auth/api/getCookieAccountInfoBySToken
-//   参数 stoken(str) + uid(num)
+//   参数 stoken(str) + mid(str)     ← 实测必须用 mid
 //   返回 data{ uid, cookie_token }
-// 已用真实令牌验证：令牌有效时返回 retcode=0 + cookie_token；
-// 令牌失效时返回 retcode=-100「登录状态失效，请重新登录」（语义清晰）。
 //
-// 注意：参数是 uid（米游社 UID，如 34219464），不是 mid。
+// 实测（2026-10-14，两个真实账号）：
+//   cookie_by_stoken + stoken+mid -> retcode=0  data=[uid, cookie_token]  ✅
+//   cookie_by_stoken + stoken+uid -> retcode=-100 登录状态失效            ❌
+//   game_token       + stoken+mid -> retcode=-1   decode err              ❌
+// 注意：官方文档写的是 uid，但实测传 uid 会被判定登录失效，必须以 mid 传参。
 inline std::tuple<int, std::string> GetCookieTokenByStoken(
     const std::string_view stoken,
-    const std::string_view uid)
+    const std::string_view mid)
 {
     const auto response = cpr::Get(
         cpr::Url{ api::mhy::takumi::cookie_by_stoken },
         cpr::Parameters{
             { "stoken", stoken.data() },
-            { "uid", uid.data() } },
+            { "mid", mid.data() } },
         cpr::Header{ { "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) miHoYoBBS/2.76.1" } },
         cpr::Timeout{ std::chrono::milliseconds(15000) },
         cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
@@ -190,13 +192,13 @@ inline std::tuple<int, std::string> GetCookieTokenByStoken(
         if (fopen_s(&fp, "MHY_token_error.log", "a") == 0 && fp != nullptr)
         {
             std::fprintf(fp,
-                         "status=%ld  curl_code=%d  text_len=%zu\n  text=[%s]\n  stoken_len=%zu  uid=[%s]\n\n",
+                         "status=%ld  curl_code=%d  text_len=%zu\n  text=[%s]\n  stoken_len=%zu  mid=[%s]\n\n",
                          static_cast<long>(response.status_code),
                          static_cast<int>(response.error.code),
                          response.text.size(),
                          response.text.substr(0, 500).c_str(),
                          stoken.size(),
-                         uid.data());
+                         mid.data());
             std::fclose(fp);
         }
     }
@@ -221,9 +223,9 @@ inline std::tuple<int, std::string> GetCookieTokenByStoken(
 // 兼容旧调用名（新代码请用 GetCookieTokenByStoken）
 inline std::tuple<int, std::string> GetGameTokenByStoken(
     const std::string_view stoken,
-    const std::string_view uid)
+    const std::string_view mid)
 {
-    return GetCookieTokenByStoken(stoken, uid);
+    return GetCookieTokenByStoken(stoken, mid);
 }
 
 inline std::tuple<int, GeetestData> CreateLoginCaptcha(
