@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <chrono>
 #include <cstdio>
@@ -80,16 +80,10 @@ struct ScanPerfStats
         {
             items[idx].worstUs = us;
         }
-        long long total = 0;
-        for (const auto& it : items)
-        {
-            total += it.count;
-        }
-        if (total - reported >= 200)
-        {
-            reported = total;
-            Report();
-        }
+        // 每次采样都写一份最新汇总（2026-10-14 DSH 修改）。
+        // 原来要攒满 200 次才写，导致"只抢了一次码"时日志文件根本不生成，
+        // 没法快速看到单次链路耗时。日志量很小（每次一行汇总）。
+        Report();
     }
 };
 

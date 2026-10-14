@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <string_view>
 
@@ -107,8 +107,13 @@ namespace takumi
 {
 constexpr compile_string base{ "https://api-takumi.mihoyo.com" };
 constexpr auto multi_token = base + compile_string{ "/auth/api/getMultiTokenByLoginTicket" };
+// 已废弃：该接口处理 v2 SToken（.CAE= 结尾）时服务端返回 retcode=-1 + decode err。
+// 保留常量仅为兼容，新代码请用 cookie_by_stoken。
 constexpr auto game_token = base + compile_string{ "/auth/api/getGameToken" };
 constexpr auto game_token_stoken = base + compile_string{ "/account/ma-cn-session/app/getTokenByGameToken" };
+// SToken -> Cookie Token（正确接口，2026-10-14 DSH 修正）
+// 参数：stoken(str) + uid(num)；返回：data{ uid, cookie_token }
+constexpr auto cookie_by_stoken = base + compile_string{ "/auth/api/getCookieAccountInfoBySToken" };
 }
 
 namespace passport

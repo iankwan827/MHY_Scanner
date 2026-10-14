@@ -1,4 +1,4 @@
-﻿#include "WindowMain.h"
+#include "WindowMain.h"
 
 #include <fstream>
 #include <filesystem>
@@ -211,8 +211,8 @@ void WindowMain::pBtstartScreen(bool clicked)
         {
             std::string stoken = userinfo["account"][countA]["access_key"];
             std::string uid = userinfo["account"][countA]["uid"];
-            std::string mid = userinfo["account"][countA]["mid"];
-            auto [code, game_token] = GetGameTokenByStoken(stoken, mid);
+            // 2026-10-14 DSH 修正：正确接口需要 uid（不是 mid）
+            auto [code, game_token] = GetCookieTokenByStoken(stoken, uid);
             if (code != 0)
             {
                 emit AccountError();
@@ -274,8 +274,8 @@ void WindowMain::pBtStream(bool clicked)
         {
             std::string stoken = userinfo["account"][countA]["access_key"];
             std::string uid = userinfo["account"][countA]["uid"];
-            std::string mid = userinfo["account"][countA]["mid"];
-            auto [code, game_token] = GetGameTokenByStoken(stoken, mid);
+            // 2026-10-14 DSH 修正：正确接口需要 uid（不是 mid）
+            auto [code, game_token] = GetCookieTokenByStoken(stoken, uid);
             if (code != 0)
             {
                 emit AccountError();
