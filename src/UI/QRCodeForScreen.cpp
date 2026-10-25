@@ -1,4 +1,4 @@
-﻿#include "QRCodeForScreen.h"
+#include "QRCodeForScreen.h"
 
 #include <chrono>
 #include <thread>
@@ -71,6 +71,8 @@ void QRCodeForScreen::LoginOfficial()
             qrScanners.decodeSingle(img, str);
             if (str.size() < 85)
             {
+                // 还没看到码：趁等待期预热扫码接口的连接（2026-10-25 DSH 添加）
+                WarmupScanConnectionThrottled();
                 return;
             }
             std::string_view view(str.c_str() + 79, 3);
@@ -146,6 +148,8 @@ void QRCodeForScreen::LoginBH3BiliBili()
             qrScanners.decodeSingle(img, str);
             if (str.size() < 85)
             {
+                // 还没看到码：趁等待期预热扫码接口的连接（2026-10-25 DSH 添加）
+                WarmupScanConnectionThrottled();
                 return;
             }
             if (std::string_view view(str.c_str() + 79, 3); view != "8F3")

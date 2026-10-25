@@ -312,6 +312,51 @@ inline auto LoginByMobileCaptcha(const std::string_view actionType, const std::s
     return result;
 }
 
+// ---- 扫码接口连接复用（2026-10-25 DSH 添加）-------------------------------
+//
+// 实测每次抢码调用都是全新连接，分段耗时：
+//   DNS ~180ms + TCP ~35ms + TLS ~155ms + 真正请求 ~100ms
+// 其中约 370ms 纯粹是建连开销，而抢码是毫秒级竞争，这段必须省掉。
+//
+// 做法：每个工作线程持有一个 cpr::Session（thread_local），
+// curl 会在会话内复用已建立的 TCP+TLS 连接；再在"还没看到码"的空闲期
+// 周期性预热，让码出现的那一刻连接已经就绪。
+//
+// 注：连接复用按 scheme+host+port 匹配，与路径无关，所以预热用主机根地址
+// 即可（scanUrl 要等首次识别出码才被赋值，不能依赖它）。
+constexpr std::string_view kScanWarmupUrl{ "https://api-sdk.mihoyo.com/" };
+
+inline cpr::Session& ThreadScanSession()
+{
+    thread_local cpr::Session session;
+    return session;
+}
+
+// 预热：发一个无害请求，建立并缓存 TCP+TLS 连接（丢弃返回内容）
+inline void WarmupScanConnection(const std::string_view url)
+{
+    auto& session = ThreadScanSession();
+    session.SetUrl(cpr::Url{ std::string(url) });
+    session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(4000) });
+    session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(3000) });
+    session.Get();
+}
+
+// 带节流的预热：同一线程默认 40 秒最多一次（各游戏扫码接口同主机，共用连接）
+inline void WarmupScanConnectionThrottled(
+    const std::string_view url = kScanWarmupUrl,
+    const std::chrono::seconds period = std::chrono::seconds(40))
+{
+    thread_local std::chrono::steady_clock::time_point last{};
+    const auto now = std::chrono::steady_clock::now();
+    if (last.time_since_epoch().count() != 0 && (now - last) < period)
+    {
+        return;
+    }
+    last = now;
+    WarmupScanConnection(url);
+}
+
 // 抢码诊断日志（2026-10-25 DSH 添加）
 //
 // 目的：把 api-scan / api-confirm 的真实响应写进 MHY_scan_error.log。
@@ -351,17 +396,21 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
 {
     // 计时：scan 接口耗时（2026-10-11 DSH 修改）
     const ScanPerfTimer _tScan(3);
+    const std::string body{ nlohmann::json{
+        { "app_id", static_cast<int>(gameType) },
+        { "device", device_id },
+        { "ticket", ticket } }
+                                .dump() };
+
+    auto& session = ThreadScanSession();
+    session.SetUrl(cpr::Url{ std::string(url) });
+    session.SetHeader(cpr::Header{ { "Content-Type", "application/json" } });
+    session.SetBody(cpr::Body{ body });
+    session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(10000) });
+    session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+
     const auto t0 = std::chrono::steady_clock::now();
-    const auto response = cpr::Post(
-        cpr::Url{ url },
-        cpr::Body{ nlohmann::json{
-            { "app_id", static_cast<int>(gameType) },
-            { "device", device_id },
-            { "ticket", ticket } }
-                       .dump() },
-        cpr::Header{ { "Content-Type", "application/json" } },
-        cpr::Timeout{ std::chrono::milliseconds(10000) },
-        cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+    const auto response = session.Post();
     const double ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - t0)
                           .count();
@@ -379,18 +428,22 @@ inline bool ConfirmQRLogin(const std::string_view url, const std::string_view ui
 {
     // 计时：confirm 接口耗时（2026-10-11 DSH 修改）
     const ScanPerfTimer _tConfirm(4);
+    const std::string body{ nlohmann::json{
+        { "app_id", static_cast<int>(gameType) },
+        { "device", device_id },
+        { "ticket", ticket },
+        { "payload", { { "proto", "Account" }, { "raw", nlohmann::json{ { "uid", uid }, { "token", gameToken } }.dump() } } } }
+                                .dump() };
+
+    auto& session = ThreadScanSession();
+    session.SetUrl(cpr::Url{ std::string(url) });
+    session.SetHeader(cpr::Header{ { "Content-Type", "application/json" } });
+    session.SetBody(cpr::Body{ body });
+    session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(15000) });
+    session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+
     const auto t0 = std::chrono::steady_clock::now();
-    const auto response = cpr::Post(
-        cpr::Url{ url },
-        cpr::Body{ nlohmann::json{
-            { "app_id", static_cast<int>(gameType) },
-            { "device", device_id },
-            { "ticket", ticket },
-            { "payload", { { "proto", "Account" }, { "raw", nlohmann::json{ { "uid", uid }, { "token", gameToken } }.dump() } } } }
-                       .dump() },
-        cpr::Header{ { "Content-Type", "application/json" } },
-        cpr::Timeout{ std::chrono::milliseconds(15000) },
-        cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+    const auto response = session.Post();
     const double ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - t0)
                           .count();
