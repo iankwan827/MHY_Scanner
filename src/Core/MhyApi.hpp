@@ -312,6 +312,37 @@ inline auto LoginByMobileCaptcha(const std::string_view actionType, const std::s
     return result;
 }
 
+// 抢码诊断日志（2026-10-25 DSH 添加）
+//
+// 目的：把 api-scan / api-confirm 的真实响应写进 MHY_scan_error.log。
+// 之前只记录耗时（avg=718ms），但不知道失败原因是"网络慢"还是"服务器拒绝"
+// （例如二维码已被其他设备扫描、ticket 失效、app_id 不匹配），
+// 这两种情况修法完全不同。
+//
+// 这两个接口只在抢码命中时调用（每次最多 3 次），同步写盘的开销可以忽略，
+// 与 PerfStats 不同，它不在每帧的热路径上，因此不做无锁改造。
+inline void LogScanDiag(const char* tag,
+                        const std::string_view url,
+                        const cpr::Response& response,
+                        const double ms)
+{
+    FILE* fp = nullptr;
+    if (fopen_s(&fp, "MHY_scan_error.log", "a") != 0 || fp == nullptr)
+    {
+        return;
+    }
+    const std::string u(url);
+    std::fprintf(fp,
+                 "[%s] elapsed=%.1fms  status=%ld  curl_code=%d  len=%zu\n  url=%s\n  resp=[%s]\n\n",
+                 tag, ms,
+                 static_cast<long>(response.status_code),
+                 static_cast<int>(response.error.code),
+                 response.text.size(),
+                 u.c_str(),
+                 response.text.substr(0, 800).c_str());
+    std::fclose(fp);
+}
+
 // 抢码场景接口超时：设成「防死等」而不是「逼失败」。
 // 2026-10-11 初版设为 1500ms/2500ms —— 太激进，网络稍慢就超时，
 // 超时后 response.text 为空 → 解析丢弃 → 直接返回 false → 扫码失败。
@@ -320,6 +351,7 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
 {
     // 计时：scan 接口耗时（2026-10-11 DSH 修改）
     const ScanPerfTimer _tScan(3);
+    const auto t0 = std::chrono::steady_clock::now();
     const auto response = cpr::Post(
         cpr::Url{ url },
         cpr::Body{ nlohmann::json{
@@ -330,6 +362,10 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
         cpr::Header{ { "Content-Type", "application/json" } },
         cpr::Timeout{ std::chrono::milliseconds(10000) },
         cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+    LogScanDiag("scan", url, response, ms);
 
     const auto j = nlohmann::json::parse(response.text, nullptr, false);
     if (j.is_discarded())
@@ -343,6 +379,7 @@ inline bool ConfirmQRLogin(const std::string_view url, const std::string_view ui
 {
     // 计时：confirm 接口耗时（2026-10-11 DSH 修改）
     const ScanPerfTimer _tConfirm(4);
+    const auto t0 = std::chrono::steady_clock::now();
     const auto response = cpr::Post(
         cpr::Url{ url },
         cpr::Body{ nlohmann::json{
@@ -354,6 +391,10 @@ inline bool ConfirmQRLogin(const std::string_view url, const std::string_view ui
         cpr::Header{ { "Content-Type", "application/json" } },
         cpr::Timeout{ std::chrono::milliseconds(15000) },
         cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+    LogScanDiag("confirm", url, response, ms);
 
     const auto j = nlohmann::json::parse(response.text, nullptr, false);
     if (j.is_discarded())
