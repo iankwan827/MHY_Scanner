@@ -394,8 +394,6 @@ inline void LogScanDiag(const char* tag,
 // 2026-10-14 放宽到 10s/15s，保留防死等能力但不会误杀正常请求。
 inline bool ScanQRLogin(const std::string_view url, const std::string_view ticket, GameType gameType)
 {
-    // 计时：scan 接口耗时（2026-10-11 DSH 修改）
-    const ScanPerfTimer _tScan(3);
     const std::string body{ nlohmann::json{
         { "app_id", static_cast<int>(gameType) },
         { "device", device_id },
@@ -411,10 +409,17 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
 
     const auto t0 = std::chrono::steady_clock::now();
     const auto response = session.Post();
-    const double ms = std::chrono::duration<double, std::milli>(
-                          std::chrono::steady_clock::now() - t0)
-                          .count();
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    const double ms = static_cast<double>(us) / 1000.0;
+
+    // 显式记录 + 立即落盘：不能依赖 ScanPerfTimer 的析构，
+    // 否则"扫码成功后自动退出"会在数据写盘前就结束进程。
+    // 2026-10-26 DSH 修改
+    ScanPerfStats::Get().Add(3, us);
     LogScanDiag("scan", url, response, ms);
+    ScanPerfStats::Get().FlushNow("抢码 scan 完成");
 
     const auto j = nlohmann::json::parse(response.text, nullptr, false);
     if (j.is_discarded())
@@ -426,8 +431,6 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
 
 inline bool ConfirmQRLogin(const std::string_view url, const std::string_view uid, const std::string_view gameToken, const std::string_view ticket, GameType gameType)
 {
-    // 计时：confirm 接口耗时（2026-10-11 DSH 修改）
-    const ScanPerfTimer _tConfirm(4);
     const std::string body{ nlohmann::json{
         { "app_id", static_cast<int>(gameType) },
         { "device", device_id },
@@ -444,10 +447,14 @@ inline bool ConfirmQRLogin(const std::string_view url, const std::string_view ui
 
     const auto t0 = std::chrono::steady_clock::now();
     const auto response = session.Post();
-    const double ms = std::chrono::duration<double, std::milli>(
-                          std::chrono::steady_clock::now() - t0)
-                          .count();
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    const double ms = static_cast<double>(us) / 1000.0;
+
+    ScanPerfStats::Get().Add(4, us);
     LogScanDiag("confirm", url, response, ms);
+    ScanPerfStats::Get().FlushNow("抢码 confirm 完成");
 
     const auto j = nlohmann::json::parse(response.text, nullptr, false);
     if (j.is_discarded())
