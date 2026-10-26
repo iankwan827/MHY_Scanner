@@ -5,6 +5,8 @@
 
 #include <QMessageBox>
 #include <QWindow>
+#include <QComboBox>
+#include <QLineEdit>
 #include <QRegularExpressionValidator>
 #include <QStringList>
 #include <QClipboard>
@@ -100,8 +102,15 @@ WindowMain::WindowMain(QWidget* parent) :
     ui.tableWidget->setSelectionMode(QAbstractItemView::SingleSelection);
     ui.tableWidget->setEditTriggers(QAbstractItemView::DoubleClicked);
 
-    ui.lineEditLiveId->setValidator(new QRegularExpressionValidator(QRegularExpression("[0-9]+$"), this));
-    ui.lineEditLiveId->setClearButtonEnabled(true);
+    // 直播间号改为可编辑下拉框，记住历史（2026-10-26 DSH 修改）
+    ui.comboBoxLiveId->setEditable(true);
+    ui.comboBoxLiveId->setInsertPolicy(QComboBox::NoInsert);   // 由代码按历史顺序插入，避免重复
+    if (auto* le = ui.comboBoxLiveId->lineEdit())
+    {
+        le->setValidator(new QRegularExpressionValidator(QRegularExpression("[0-9]+$"), this));
+        le->setClearButtonEnabled(true);
+        le->setPlaceholderText("输入或选择直播间号");
+    }
 
     ui.tableWidget->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(ui.tableWidget, &QTableWidget::customContextMenuRequested, this, &WindowMain::onTableRightClicked);
@@ -263,8 +272,11 @@ void WindowMain::pBtStream(bool clicked)
         }
         std::string stream_link;
         std::map<std::string, std::string> heards;
+        // 记住这次用的直播间号（2026-10-26 DSH 添加）
+        const std::string liveId = ui.comboBoxLiveId->currentText().toStdString();
+        RememberLiveRoom(liveId);
         //检查直播间状态
-        if (!GetStreamLink(ui.lineEditLiveId->text().toStdString(), stream_link, heards))
+        if (!GetStreamLink(liveId, stream_link, heards))
         {
             emit StopScanner();
             return;
@@ -671,6 +683,71 @@ void WindowMain::configInitUpdate()
         }
     }
     ui.tableWidget->blockSignals(false);
+    // 载入历史直播间号（2026-10-26 DSH 添加）
+    LoadLiveRooms();
+}
+
+// 直播间号历史：存在 userinfo.json 的 live_rooms 数组里（最新在前，最多 kMaxLiveRooms 条）
+// 2026-10-26 DSH 添加
+void WindowMain::LoadLiveRooms()
+{
+    if (!ui.comboBoxLiveId)
+    {
+        return;
+    }
+    const QString current = ui.comboBoxLiveId->currentText();
+    ui.comboBoxLiveId->clear();
+    if (userinfo.contains("live_rooms") && userinfo["live_rooms"].is_array())
+    {
+        for (const auto& item : userinfo["live_rooms"])
+        {
+            if (!item.is_string())
+            {
+                continue;
+            }
+            const QString id = QString::fromStdString(item.get<std::string>());
+            if (id.isEmpty() || ui.comboBoxLiveId->findText(id) >= 0)
+            {
+                continue;
+            }
+            ui.comboBoxLiveId->addItem(id);
+        }
+    }
+    if (!current.isEmpty())
+    {
+        ui.comboBoxLiveId->setEditText(current);
+    }
+}
+
+void WindowMain::RememberLiveRoom(const std::string& roomId)
+{
+    if (!ui.comboBoxLiveId || roomId.empty())
+    {
+        return;
+    }
+    const QString id = QString::fromStdString(roomId);
+
+    // 已有的先摘掉，再插到最前面，实现"最近使用在前"
+    const int existing = ui.comboBoxLiveId->findText(id);
+    if (existing >= 0)
+    {
+        ui.comboBoxLiveId->removeItem(existing);
+    }
+    ui.comboBoxLiveId->insertItem(0, id);
+    while (ui.comboBoxLiveId->count() > kMaxLiveRooms)
+    {
+        ui.comboBoxLiveId->removeItem(ui.comboBoxLiveId->count() - 1);
+    }
+    ui.comboBoxLiveId->setCurrentIndex(0);
+
+    // 落盘
+    nlohmann::json rooms = nlohmann::json::array();
+    for (int i = 0; i < ui.comboBoxLiveId->count(); ++i)
+    {
+        rooms.push_back(ui.comboBoxLiveId->itemText(i).toStdString());
+    }
+    userinfo["live_rooms"] = rooms;
+    m_config->updateConfig(userinfo.dump());
 }
 
 void WindowMain::updateNote(QTableWidgetItem* item)

@@ -80,14 +80,20 @@
      <string>直播间ID：</string>
     </property>
    </widget>
-   <widget class="QLineEdit" name="lineEditLiveId">
+   <widget class="QComboBox" name="comboBoxLiveId">
     <property name="geometry">
      <rect>
       <x>340</x>
       <y>320</y>
       <width>131</width>
-      <height>21</height>
+      <height>22</height>
      </rect>
+    </property>
+    <property name="editable">
+     <bool>true</bool>
+    </property>
+    <property name="maxVisibleItems">
+     <number>15</number>
     </property>
    </widget>
    <widget class="QLabel" name="label_3">

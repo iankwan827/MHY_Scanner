@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <vector>
 
@@ -93,4 +93,8 @@ private:
     WindowLogin* windowLogin{};
     void copyEntireRow(int row);
     void onTableRightClicked(const QPoint& pos);
+    // 直播间号历史（2026-10-26 DSH 添加）
+    void LoadLiveRooms();
+    void RememberLiveRoom(const std::string& roomId);
+    static constexpr int kMaxLiveRooms = 20;
 };
