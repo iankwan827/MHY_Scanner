@@ -640,8 +640,12 @@ inline std::vector<std::string> BuildPassportCookieCandidates(
 
     if (s.rfind("v2_", 0) == 0)
     {
-        list.push_back("stoken_v2=" + s + "; mid=" + m);
+        // 2026-10-26 本地端到端实测（自己造码 → scan → passport → confirm）：
+        //   仅 stoken_v2 + mid          → retcode=-100 被拒
+        //   stoken_v2 + stoken + mid    → retcode=0  成功（app_name=原神）
+        // 两个键名必须同时带，所以这个组合放第一位，省一次往返。
         list.push_back("stoken_v2=" + s + "; stoken=" + s + "; mid=" + m);
+        list.push_back("stoken_v2=" + s + "; mid=" + m);
     }
     list.push_back("stoken=" + s + "; mid=" + m);
     if (!ct.empty())
