@@ -9,6 +9,7 @@
 #include <iostream>
 #include <chrono>   // cpr::Timeout 需要（2026-10-11 DSH 修改）
 #include <cstdio>   // fopen_s/fprintf 诊断日志（2026-10-14 DSH 修改）
+#include <vector>   // Cookie 候选列表（2026-10-26 DSH 修改)
 #include <ctime>    // 流程日志时间戳（2026-10-26 DSH 修改）
 
 #include <nlohmann/json.hpp>
@@ -538,10 +539,9 @@ inline std::string GetPassportQRParam(const std::string_view qrCode,
 }
 
 // Step 2 / Step 3：passport 扫码与确认（confirm=false 为扫描，true 为确认）
-inline bool PassportQRCodeLogin(const std::string_view passportQrUrl,
-                                const std::string_view stoken,
-                                const std::string_view mid,
-                                const bool confirm)
+inline bool PassportQRCall(const std::string_view passportQrUrl,
+                          const std::string_view cookie,
+                          const bool confirm)
 {
     const std::string ticket = GetPassportQRParam(passportQrUrl, "tk", "&");
     std::string tokenTypes = GetPassportQRParam(passportQrUrl, "token_types", "#");
@@ -559,7 +559,6 @@ inline bool PassportQRCodeLogin(const std::string_view passportQrUrl,
         { "ticket", ticket },
         { "token_types", nlohmann::json::array({ tokenTypes }) } }
                                 .dump() };
-    const std::string cookie = "stoken=" + std::string(stoken) + ";mid=" + std::string(mid);
     const std::string url = confirm ?
         std::string(std::string_view(api::mhy::passport::confirm_qr_login)) :
         std::string(std::string_view(api::mhy::passport::scan_qr_login));
@@ -568,9 +567,14 @@ inline bool PassportQRCodeLogin(const std::string_view passportQrUrl,
     session.SetUrl(cpr::Url{ url });
     session.SetHeader(cpr::Header{
         { "Content-Type", "application/json" },
+        { "Accept", "application/json" },
         { "x-rpc-app_id", std::string(kPassportAppId) },
+        { "x-rpc-app_version", "2.76.1" },
+        { "x-rpc-client_type", "2" },
+        { "x-rpc-game_biz", "bbs_cn" },
+        { "x-rpc-sdk_version", "2.16.0" },
         { "x-rpc-device_id", device_id },
-        { "Cookie", cookie } });
+        { "Cookie", std::string(cookie) } });
     session.SetBody(cpr::Body{ body });
     session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(15000) });
     session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
@@ -614,18 +618,72 @@ inline bool PassportQRCodeLogin(const std::string_view passportQrUrl,
     return retcode == 0;
 }
 
-inline bool ScanPassportQRLogin(const std::string_view passportQrUrl,
-                                const std::string_view stoken,
-                                const std::string_view mid)
+// 候选 Cookie 列表（2026-10-26 DSH 添加）
+//
+// 实测：passport-api 先校验 ticket 再校验认证，所以"哪种 Cookie 才对"只能
+// 在拿到新鲜 tk 的那一刻试出来。与其一次次等人放码，不如在一次抢码里把
+// 候选全部试完，谁成功用谁，并把结果写进 MHY_flow.log。
+//
+// 依据：ErYouScanner 的注释「Current SToken v2 credentials are verified from
+// Cookie」—— v2 令牌在 Cookie 里的键名是 stoken_v2，而不是 stoken。
+inline std::vector<std::string> BuildPassportCookieCandidates(
+    const std::string_view stoken,
+    const std::string_view mid,
+    const std::string_view uid,
+    const std::string_view cookieToken)
 {
-    return PassportQRCodeLogin(passportQrUrl, stoken, mid, false);
+    std::vector<std::string> list;
+    const std::string s{ stoken };
+    const std::string m{ mid };
+    const std::string u{ uid };
+    const std::string ct{ cookieToken };
+
+    if (s.rfind("v2_", 0) == 0)
+    {
+        list.push_back("stoken_v2=" + s + "; mid=" + m);
+        list.push_back("stoken_v2=" + s + "; stoken=" + s + "; mid=" + m);
+    }
+    list.push_back("stoken=" + s + "; mid=" + m);
+    if (!ct.empty())
+    {
+        list.push_back("cookie_token=" + ct + "; account_id=" + u + "; ltuid=" + u);
+        list.push_back("stoken=" + s + "; mid=" + m + "; cookie_token=" + ct +
+                       "; account_id=" + u + "; ltuid=" + u);
+    }
+    return list;
 }
 
-inline bool ConfirmPassportQRLogin(const std::string_view passportQrUrl,
-                                   const std::string_view stoken,
-                                   const std::string_view mid)
+// Step 2：依次尝试候选 Cookie，成功则把该 Cookie 交给 outCookie 供 Step 3 复用
+inline bool ScanPassportQRLoginAuto(const std::string_view passportQrUrl,
+                                    const std::string_view stoken,
+                                    const std::string_view mid,
+                                    const std::string_view uid,
+                                    const std::string_view cookieToken,
+                                    std::string& outCookie)
 {
-    return PassportQRCodeLogin(passportQrUrl, stoken, mid, true);
+    const auto candidates = BuildPassportCookieCandidates(stoken, mid, uid, cookieToken);
+    int idx = 0;
+    for (const auto& cookie : candidates)
+    {
+        ++idx;
+        LogFlow("[step2] 尝试 Cookie#" + std::to_string(idx) + " [" +
+                cookie.substr(0, 28) + "…]");
+        if (PassportQRCall(passportQrUrl, cookie, false))
+        {
+            outCookie = cookie;
+            LogFlow("[step2] Cookie#" + std::to_string(idx) + " 成功，Step3 将复用");
+            return true;
+        }
+    }
+    LogFlow("[step2] 全部 " + std::to_string(idx) + " 种 Cookie 均失败");
+    return false;
+}
+
+// Step 3：用 Step 2 确认过的那套 Cookie 完成确认
+inline bool ConfirmPassportQRLogin(const std::string_view passportQrUrl,
+                                   const std::string_view cookie)
+{
+    return PassportQRCall(passportQrUrl, cookie, true);
 }
 
 // 抢码场景接口超时：设成「防死等」而不是「逼失败」。

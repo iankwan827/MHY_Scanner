@@ -113,7 +113,7 @@ void QRCodeForScreen::LoginOfficial()
                 {
                     lastTicket = ticket;
                     m_passportQrUrl = passportQrUrl;
-                    if (!ScanPassportQRLogin(m_passportQrUrl, stoken, mid))
+                    if (!ScanPassportQRLoginAuto(m_passportQrUrl, stoken, mid, uid, gameToken, m_passportCookie))
                     {
                         emit loginResults(ScanRet::FAILURE_1);
                         stop();
@@ -231,7 +231,7 @@ void QRCodeForScreen::continueLastLogin()
     case Official:
     {
         // Step 3：passport 确认（2026-10-26 DSH 修改，旧的游戏 API confirm 无效）
-        bool b = ConfirmPassportQRLogin(m_passportQrUrl, stoken, mid);
+        bool b = ConfirmPassportQRLogin(m_passportQrUrl, m_passportCookie);
         if (b)
         {
             Q_EMIT loginResults(ScanRet::SUCCESS);

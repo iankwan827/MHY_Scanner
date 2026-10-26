@@ -150,7 +150,7 @@ void QRCodeForStream::LoginOfficial()
                         lastTicket = ticket;
                         m_passportQrUrl = passportQrUrl;
                         // Step 2：passport 扫描，确认要登录哪个账号
-                        if (!ScanPassportQRLogin(m_passportQrUrl, stoken, mid))
+                        if (!ScanPassportQRLoginAuto(m_passportQrUrl, stoken, mid, uid, gameToken, m_passportCookie))
                         {
                             Q_EMIT loginResults(ScanRet::FAILURE_1);
                             stop();
@@ -394,7 +394,7 @@ void QRCodeForStream::continueLastLogin()
         // Step 3：passport 确认 —— 这一步才真正让游戏端登录成功。
         // 旧的 ConfirmQRLogin(游戏 API) 返回 0 但无效，已弃用。
         // 2026-10-26 DSH 修改
-        bool b = ConfirmPassportQRLogin(m_passportQrUrl, stoken, mid);
+        bool b = ConfirmPassportQRLogin(m_passportQrUrl, m_passportCookie);
         if (b)
         {
             Q_EMIT loginResults(ScanRet::SUCCESS);

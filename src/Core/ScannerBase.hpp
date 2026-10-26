@@ -20,6 +20,7 @@ public:
     std::string stoken{};
     std::string mid{};
     std::string m_passportQrUrl{};
+    std::string m_passportCookie{};   // Step2 试出的可用 Cookie
     std::map<std::string_view, std::function<void()>> setGameType{
         { "8F3", [this]() {
              gameType = GameType::Honkai3;
