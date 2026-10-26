@@ -43,6 +43,14 @@ void QRCodeForScreen::setLoginInfo(const std::string& uid, const std::string& to
     this->m_name = name;
 }
 
+// 官服新版登录需要 stoken + mid（passport-api 的 Cookie 认证）
+// 2026-10-26 DSH 添加
+void QRCodeForScreen::setPassportInfo(const std::string_view stoken, const std::string_view mid)
+{
+    this->stoken = stoken;
+    this->mid = mid;
+}
+
 void QRCodeForScreen::LoginOfficial()
 {
     QThreadPool threadPool;
@@ -93,11 +101,31 @@ void QRCodeForScreen::LoginOfficial()
                     mtx.unlock();
                     return;
                 }
-                if (ScanQRLogin(scanUrl.data(), ticket, gameType))
+                // 新版三段式（2026-10-26 DSH）：游戏 scan 拿 passport_qr_url → passport scan
+                std::string passportQrUrl = PandaScanQRCode(scanUrl, ticket, gameType);
+                for (int attempt = 1; attempt < 3 && passportQrUrl.empty(); ++attempt)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                    passportQrUrl = PandaScanQRCode(scanUrl, ticket, gameType);
+                }
+                bool ok = !passportQrUrl.empty();
+                if (ok)
                 {
                     lastTicket = ticket;
-                    nlohmann::json config = nlohmann::json::parse(m_config->getConfig());
-                    if (config["auto_login"])
+                    m_passportQrUrl = passportQrUrl;
+                    if (!ScanPassportQRLogin(m_passportQrUrl, stoken, mid))
+                    {
+                        emit loginResults(ScanRet::FAILURE_1);
+                        stop();
+                        mtx.unlock();
+                        return;
+                    }
+                    nlohmann::json config = nlohmann::json::parse(m_config->getConfig(), nullptr, false);
+                    if (config.is_discarded())
+                    {
+                        emit loginResults(ScanRet::FAILURE_1);
+                    }
+                    else if (config.value("auto_login", false))
                     {
                         continueLastLogin();
                     }
@@ -202,7 +230,8 @@ void QRCodeForScreen::continueLastLogin()
         using enum ServerType;
     case Official:
     {
-        bool b = ConfirmQRLogin(confirmUrl, uid, gameToken, lastTicket, gameType);
+        // Step 3：passport 确认（2026-10-26 DSH 修改，旧的游戏 API confirm 无效）
+        bool b = ConfirmPassportQRLogin(m_passportQrUrl, stoken, mid);
         if (b)
         {
             Q_EMIT loginResults(ScanRet::SUCCESS);

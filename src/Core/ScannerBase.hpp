@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <string>
 #include <string_view>
@@ -14,6 +14,12 @@ public:
     std::string lastTicket;
     std::string uid;
     std::string gameToken{};
+    // 新版三段式登录所需（2026-10-26 DSH 添加）：
+    //   stoken/mid 用于 passport-api 的 Cookie 认证
+    //   m_tk 保存 Step 1 返回的 passport_qr_url（内含 tk），供 Step 3 使用
+    std::string stoken{};
+    std::string mid{};
+    std::string m_passportQrUrl{};
     std::map<std::string_view, std::function<void()>> setGameType{
         { "8F3", [this]() {
              gameType = GameType::Honkai3;

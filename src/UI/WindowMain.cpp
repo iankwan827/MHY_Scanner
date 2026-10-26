@@ -220,6 +220,8 @@ void WindowMain::pBtstartScreen(bool clicked)
                 return;
             }
             t1.setServerType(ServerType::Official);
+            // 新版三段式登录：passport-api 需要 stoken + mid（2026-10-26 DSH）
+            t1.setPassportInfo(stoken, mid);
             t1.setLoginInfo(uid, game_token);
         }
         else if (type == "崩坏3B服")
@@ -284,6 +286,8 @@ void WindowMain::pBtStream(bool clicked)
                 return;
             }
             t2.setServerType(ServerType::Official);
+            // 新版三段式登录：passport-api 需要 stoken + mid（2026-10-26 DSH）
+            t2.setPassportInfo(stoken, mid);
             t2.setLoginInfo(uid, game_token);
         }
         else if (type == "崩坏3B服")

@@ -121,6 +121,10 @@ namespace passport
 constexpr compile_string base{ "https://passport-api.mihoyo.com" };
 constexpr auto create_captcha = base + compile_string{ "/account/ma-cn-verifier/verifier/createLoginCaptcha" };
 constexpr auto login_by_mobile_captcha = base + compile_string{ "/account/ma-cn-passport/app/loginByMobileCaptcha" };
+// 游戏二维码登录（新版三段式的第 2、3 步，2026-10-26 DSH 添加）
+// Cookie 需带 stoken + mid；body 为 { ticket: <tk>, token_types: ["1"] }
+constexpr auto scan_qr_login = base + compile_string{ "/account/ma-cn-passport/app/scanQRLogin" };
+constexpr auto confirm_qr_login = base + compile_string{ "/account/ma-cn-passport/app/confirmQRLogin" };
 }
 
 namespace mys

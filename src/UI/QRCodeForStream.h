@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <atomic>
 #include <string_view>
@@ -36,6 +36,8 @@ public:
 
     void setLoginInfo(const std::string_view uid, const std::string_view gameToken);
     void setLoginInfo(const std::string_view uid, const std::string_view gameToken, const std::string& name);
+    // 官服新版三段式登录所需（2026-10-26 DSH 添加）
+    void setPassportInfo(const std::string_view stoken, const std::string_view mid);
     void setServerType(const ServerType servertype);
     void setUrl(const std::string& url, const std::map<std::string, std::string> heard = {});
     auto init() -> bool;

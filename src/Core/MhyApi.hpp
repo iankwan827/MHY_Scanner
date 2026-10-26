@@ -9,6 +9,7 @@
 #include <iostream>
 #include <chrono>   // cpr::Timeout 需要（2026-10-11 DSH 修改）
 #include <cstdio>   // fopen_s/fprintf 诊断日志（2026-10-14 DSH 修改）
+#include <ctime>    // 流程日志时间戳（2026-10-26 DSH 修改）
 
 #include <nlohmann/json.hpp>
 #include <cpr/cpr.h>
@@ -325,6 +326,8 @@ inline auto LoginByMobileCaptcha(const std::string_view actionType, const std::s
 // 注：连接复用按 scheme+host+port 匹配，与路径无关，所以预热用主机根地址
 // 即可（scanUrl 要等首次识别出码才被赋值，不能依赖它）。
 constexpr std::string_view kScanWarmupUrl{ "https://api-sdk.mihoyo.com/" };
+// 三段式流程第 2、3 步走 passport-api，同样需要预热
+constexpr std::string_view kPassportWarmupUrl{ "https://passport-api.mihoyo.com/" };
 
 inline cpr::Session& ThreadScanSession()
 {
@@ -342,9 +345,17 @@ inline void WarmupScanConnection(const std::string_view url)
     session.Get();
 }
 
-// 带节流的预热：同一线程默认 40 秒最多一次（各游戏扫码接口同主机，共用连接）
+// 两个主机都预热（抢码链路同时用到 api-sdk 与 passport-api）
+inline void WarmupAllConnections()
+{
+    WarmupScanConnection(kScanWarmupUrl);
+    WarmupScanConnection(kPassportWarmupUrl);
+}
+
+// 带节流的预热：同一线程默认 40 秒最多一次。
+// 实测服务端空闲约 90 秒后关闭连接，40 秒留足余量。
+// 两个主机（api-sdk / passport-api）都预热，覆盖三段式的全部请求。
 inline void WarmupScanConnectionThrottled(
-    const std::string_view url = kScanWarmupUrl,
     const std::chrono::seconds period = std::chrono::seconds(40))
 {
     thread_local std::chrono::steady_clock::time_point last{};
@@ -354,7 +365,8 @@ inline void WarmupScanConnectionThrottled(
         return;
     }
     last = now;
-    WarmupScanConnection(url);
+    WarmupScanConnection(kScanWarmupUrl);
+    WarmupScanConnection(kPassportWarmupUrl);
 }
 
 // 抢码诊断日志（2026-10-25 DSH 添加）
@@ -386,6 +398,234 @@ inline void LogScanDiag(const char* tag,
                  u.c_str(),
                  response.text.substr(0, 800).c_str());
     std::fclose(fp);
+}
+
+// ===========================================================================
+// 游戏二维码登录：新版三段式（2026-10-26 DSH 添加）
+//
+// 依据：MHY_Scanner 逆向文档 docs/GAME_QR_LOGIN_FLOW.md 与开源实现
+// loqwe/ErYouScanner。
+//
+// 为什么必须走三段：
+//   旧流程 = 游戏API scan + 游戏API confirm（payload 用 uid + cookie_token）。
+//   实测该 confirm 返回 retcode=0，但主播端游戏显示"登录失败" ——
+//   cookie_token 无法用于游戏登录确认，这个 confirm 实际上不生效。
+//
+// 正确流程：
+//   Step 1  POST api-sdk/{game}/combo/panda/qrcode/scan
+//           body 必须含 passport_app_id = "bll8iq97cem8"
+//           响应 data.passport_qr_url 里带 tk=<uuid>&token_types=1
+//   Step 2  POST passport-api/account/ma-cn-passport/app/scanQRLogin
+//           Cookie: stoken=<账号 stoken>; mid=<账号 mid>
+//           body: { ticket: <tk>, token_types: ["1"] }
+//   Step 3  POST passport-api/account/ma-cn-passport/app/confirmQRLogin
+//           同样 Cookie 与 body —— 这一步才真正让游戏端登录成功
+// ===========================================================================
+
+constexpr std::string_view kPassportAppId{ "bll8iq97cem8" };
+
+// 端到端流程日志（2026-10-26 DSH 添加）
+//
+// 教训：之前只记录"单次请求"的 HTTP 状态与 retcode。可 scan 明明返回
+// retcode=0，真正的故障是 data.passport_qr_url 为空（流程断在第 1 步）。
+// 那条响应原文就躺在日志里，却因为没有"整条链路"的摘要而被当成成功。
+// 现在每抢一次码，MHY_flow.log 里就是一条可读的叙事：
+//   [detect] ticket=... → [step1] ... passport_url=EMPTY → [step2] ... → [step3] ...
+inline void LogFlow(const std::string& msg)
+{
+    FILE* fp = nullptr;
+    if (fopen_s(&fp, "MHY_flow.log", "a") != 0 || fp == nullptr)
+    {
+        return;
+    }
+    const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    char ts[32]{};
+    struct tm tb {};
+#ifdef _WIN32
+    localtime_s(&tb, &t);
+#else
+    localtime_r(&t, &tb);
+#endif
+    std::strftime(ts, sizeof(ts), "%H:%M:%S", &tb);
+    std::fprintf(fp, "[%s] %s\n", ts, msg.c_str());
+    std::fclose(fp);
+}
+
+inline std::string GetPassportQRParam(const std::string_view qrCode,
+                                      const std::string_view key,
+                                      const std::string_view terminators);
+
+// Step 1：游戏接口扫描，返回 passport_qr_url（失败返回空串）
+inline std::string PandaScanQRCode(const std::string_view url,
+                                  const std::string_view ticket,
+                                  GameType gameType)
+{
+    if (url.empty() || ticket.empty())
+    {
+        return {};
+    }
+
+    const std::string body{ nlohmann::json{
+        { "passport_app_id", std::string(kPassportAppId) },
+        { "ticket", ticket },
+        { "app_id", static_cast<int>(gameType) },
+        { "device", device_id },
+        { "ts", GetUnixTimeStampSeconds() } }
+                                .dump() };
+
+    auto& session = ThreadScanSession();
+    session.SetUrl(cpr::Url{ std::string(url) });
+    session.SetHeader(cpr::Header{
+        { "Content-Type", "application/json" },
+        { "x-rpc-app_id", std::string(kPassportAppId) },
+        { "x-rpc-device_id", device_id } });
+    session.SetBody(cpr::Body{ body });
+    session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(10000) });
+    session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto response = session.Post();
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    ScanPerfStats::Get().Add(3, us);
+    LogScanDiag("panda-scan", url, response, static_cast<double>(us) / 1000.0);
+    ScanPerfStats::Get().FlushNow("抢码 panda-scan 完成");
+
+    const auto j = nlohmann::json::parse(response.text, nullptr, false);
+    if (j.is_discarded())
+    {
+        LogFlow("[step1] 响应非 JSON，流程中断");
+        return {};
+    }
+    const int retcode = j.value("retcode", -1);
+    const auto passportUrl = (j.contains("data") && j["data"].is_object() &&
+                              j["data"].contains("passport_qr_url"))
+                                 ? j["data"]["passport_qr_url"].get<std::string>()
+                                 : std::string{};
+    {
+        const std::string tk = GetPassportQRParam(passportUrl, "tk", "&");
+        LogFlow("[step1] game-scan app_id=" + std::to_string(static_cast<int>(gameType)) +
+                " retcode=" + std::to_string(retcode) +
+                " passport_url=" + (passportUrl.empty() ? "EMPTY <-- 流程断在这里" : "OK") +
+                " tk=" + (tk.empty() ? std::string("-") : tk.substr(0, 8)));
+    }
+    if (retcode != 0)
+    {
+        return {};
+    }
+    return passportUrl;
+}
+
+// 从 QR URL / 查询串里取参数，例如 getPassportQRParam(url, "tk", "&")
+inline std::string GetPassportQRParam(const std::string_view qrCode,
+                                      const std::string_view key,
+                                      const std::string_view terminators)
+{
+    const std::string needle = std::string(key) + "=";
+    const auto begin = qrCode.find(needle);
+    if (begin == std::string_view::npos)
+    {
+        return {};
+    }
+    const auto valueBegin = begin + needle.size();
+    auto valueEnd = qrCode.find_first_of(terminators, valueBegin);
+    if (valueEnd == std::string_view::npos)
+    {
+        valueEnd = qrCode.size();
+    }
+    return std::string(qrCode.substr(valueBegin, valueEnd - valueBegin));
+}
+
+// Step 2 / Step 3：passport 扫码与确认（confirm=false 为扫描，true 为确认）
+inline bool PassportQRCodeLogin(const std::string_view passportQrUrl,
+                                const std::string_view stoken,
+                                const std::string_view mid,
+                                const bool confirm)
+{
+    const std::string ticket = GetPassportQRParam(passportQrUrl, "tk", "&");
+    std::string tokenTypes = GetPassportQRParam(passportQrUrl, "token_types", "#");
+    if (tokenTypes.empty())
+    {
+        tokenTypes = "1";
+    }
+    if (ticket.empty())
+    {
+        LogScanDiag(confirm ? "passport-confirm" : "passport-scan", passportQrUrl, cpr::Response{}, 0.0);
+        return false;
+    }
+
+    const std::string body{ nlohmann::json{
+        { "ticket", ticket },
+        { "token_types", nlohmann::json::array({ tokenTypes }) } }
+                                .dump() };
+    const std::string cookie = "stoken=" + std::string(stoken) + ";mid=" + std::string(mid);
+    const std::string url = confirm ?
+        std::string(std::string_view(api::mhy::passport::confirm_qr_login)) :
+        std::string(std::string_view(api::mhy::passport::scan_qr_login));
+
+    auto& session = ThreadScanSession();
+    session.SetUrl(cpr::Url{ url });
+    session.SetHeader(cpr::Header{
+        { "Content-Type", "application/json" },
+        { "x-rpc-app_id", std::string(kPassportAppId) },
+        { "x-rpc-device_id", device_id },
+        { "Cookie", cookie } });
+    session.SetBody(cpr::Body{ body });
+    session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(15000) });
+    session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto response = session.Post();
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count();
+    ScanPerfStats::Get().Add(confirm ? 4 : 3, us);
+    LogScanDiag(confirm ? "passport-confirm" : "passport-scan", url, response,
+                static_cast<double>(us) / 1000.0);
+    ScanPerfStats::Get().FlushNow(confirm ? "抢码 passport-confirm 完成"
+                                          : "抢码 passport-scan 完成");
+
+    const auto j = nlohmann::json::parse(response.text, nullptr, false);
+    const std::string phase = confirm ? "step3" : "step2";
+    const std::string who = confirm ? "passport-confirm" : "passport-scan";
+    if (j.is_discarded())
+    {
+        LogFlow("[" + phase + "] " + who + " 响应非 JSON，流程中断");
+        return false;
+    }
+    const int retcode = j.value("retcode", -1);
+    {
+        std::string extra;
+        if (!confirm && j.contains("data") && j["data"].is_object())
+        {
+            if (j["data"].contains("app_name"))
+            {
+                extra += " app_name=" + j["data"]["app_name"].get<std::string>();
+            }
+            if (j["data"].contains("account_disp_name"))
+            {
+                extra += " account=" + j["data"]["account_disp_name"].get<std::string>();
+            }
+        }
+        LogFlow("[" + phase + "] " + who + " retcode=" + std::to_string(retcode) +
+                " message=" + j.value("message", std::string{}) + extra);
+    }
+    return retcode == 0;
+}
+
+inline bool ScanPassportQRLogin(const std::string_view passportQrUrl,
+                                const std::string_view stoken,
+                                const std::string_view mid)
+{
+    return PassportQRCodeLogin(passportQrUrl, stoken, mid, false);
+}
+
+inline bool ConfirmPassportQRLogin(const std::string_view passportQrUrl,
+                                   const std::string_view stoken,
+                                   const std::string_view mid)
+{
+    return PassportQRCodeLogin(passportQrUrl, stoken, mid, true);
 }
 
 // 抢码场景接口超时：设成「防死等」而不是「逼失败」。

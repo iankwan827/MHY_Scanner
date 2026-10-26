@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <functional>
 
@@ -22,6 +22,8 @@ public:
 
     void setLoginInfo(const std::string& uid, const std::string& token);
     void setLoginInfo(const std::string& uid, const std::string& token, const std::string& name);
+    // 官服新版三段式登录所需（2026-10-26 DSH 添加）
+    void setPassportInfo(const std::string_view stoken, const std::string_view mid);
     void setServerType(const ServerType servertype);
     void continueLastLogin();
     void run();
