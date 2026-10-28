@@ -10,6 +10,7 @@
 #include <chrono>   // cpr::Timeout 需要（2026-10-11 DSH 修改）
 #include <cstdio>   // fopen_s/fprintf 诊断日志（2026-10-14 DSH 修改）
 #include <vector>   // Cookie 候选列表（2026-10-26 DSH 修改)
+#include <mutex>   // LogDetectOnce 去重（2026-10-28 DSH 修改）
 #include <ctime>    // 流程日志时间戳（2026-10-26 DSH 修改）
 
 #include <nlohmann/json.hpp>
@@ -452,6 +453,21 @@ inline void LogFlow(const std::string& msg)
     std::fclose(fp);
 }
 
+// 识别到二维码时只记录一次：同一张码每帧都会识别到，逐帧写会把日志刷爆，
+// 反而让真正有用的 step1/2/3 淹没在噪声里。2026-10-28 DSH 添加
+inline void LogDetectOnce(const std::string& game, const std::string& ticket)
+{
+    static std::mutex mtx;
+    static std::string last;
+    std::lock_guard<std::mutex> lk(mtx);
+    if (last == ticket)
+    {
+        return;
+    }
+    last = ticket;
+    LogFlow("[detect] game=" + game + " ticket=" + ticket.substr(0, 8) + "…");
+}
+
 inline std::string GetPassportQRParam(const std::string_view qrCode,
                                       const std::string_view key,
                                       const std::string_view terminators);
@@ -670,16 +686,21 @@ inline bool ScanPassportQRLoginAuto(const std::string_view passportQrUrl,
     for (const auto& cookie : candidates)
     {
         ++idx;
-        LogFlow("[step2] 尝试 Cookie#" + std::to_string(idx) + " [" +
-                cookie.substr(0, 28) + "…]");
+        // 日志必须标明用的是哪个账号（mid），否则事后无法判断是"Cookie 写法不对"
+        // 还是"这个账号的令牌 passport 不认"。2026-10-28 DSH 修改
+        LogFlow("[step2] 尝试 Cookie#" + std::to_string(idx) +
+                " mid=" + std::string(mid) +
+                " [" + cookie.substr(0, 24) + "…]");
         if (PassportQRCall(passportQrUrl, cookie, false))
         {
             outCookie = cookie;
-            LogFlow("[step2] Cookie#" + std::to_string(idx) + " 成功，Step3 将复用");
+            LogFlow("[step2] Cookie#" + std::to_string(idx) + " 成功（mid=" +
+                    std::string(mid) + "），Step3 将复用");
             return true;
         }
     }
-    LogFlow("[step2] 全部 " + std::to_string(idx) + " 种 Cookie 均失败");
+    LogFlow("[step2] mid=" + std::string(mid) + " 全部 " + std::to_string(idx) +
+            " 种 Cookie 均失败");
     return false;
 }
 

@@ -90,6 +90,7 @@ void QRCodeForScreen::LoginOfficial()
             }
             setGameType[view]();
             const std::string_view ticket(str.data() + str.size() - 24, 24);
+            LogDetectOnce(std::string(view), std::string(ticket));   // 2026-10-28 DSH
             if (lastTicket == ticket)
             {
                 return;

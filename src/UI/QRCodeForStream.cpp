@@ -115,8 +115,7 @@ void QRCodeForStream::LoginOfficial()
                 const std::string_view ticket(str.data() + str.size() - 24, 24);
                 setGameType[view]();
                 // 流程日志起点（2026-10-26 DSH 添加）
-                LogFlow("[detect] game=" + std::string(view) +
-                        " ticket=" + std::string(ticket.substr(0, 8)) + "…");
+                LogDetectOnce(std::string(view), std::string(ticket));
                 if (lastTicket == ticket)
                 {
                     return;
