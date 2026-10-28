@@ -337,10 +337,24 @@ inline cpr::Session& ThreadScanSession()
     return session;
 }
 
+// 按主机分配 curl 句柄（2026-10-28 DSH 添加）
+//
+// curl 会在【同一个 easy handle】内对属于同一证书域（*.mihoyo.com）的主机做
+// HTTP/2 连接合并：把 passport-api 的请求搭到 api-sdk 已经建立的 TLS 连接上。
+// 实测这会令 passport 接口判定会话无效，step2 恒定返回 retcode=-100；
+// 而用独立连接的测试脚本却能成功 —— 这是"软件里失败、脚本里成功"的真正原因。
+// 因此 api-sdk 与 passport-api 必须各自持有独立句柄。
+inline cpr::Session& ThreadSessionFor(const std::string_view host)
+{
+    thread_local cpr::Session sdkSession;
+    thread_local cpr::Session passportSession;
+    return (host.find("passport-api") != std::string_view::npos) ? passportSession : sdkSession;
+}
+
 // 预热：发一个无害请求，建立并缓存 TCP+TLS 连接（丢弃返回内容）
 inline void WarmupScanConnection(const std::string_view url)
 {
-    auto& session = ThreadScanSession();
+    auto& session = ThreadSessionFor(url);
     session.SetUrl(cpr::Url{ std::string(url) });
     session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(4000) });
     session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(3000) });
@@ -490,7 +504,7 @@ inline std::string PandaScanQRCode(const std::string_view url,
         { "ts", GetUnixTimeStampSeconds() } }
                                 .dump() };
 
-    auto& session = ThreadScanSession();
+    auto& session = ThreadSessionFor("api-sdk");
     session.SetUrl(cpr::Url{ std::string(url) });
     session.SetHeader(cpr::Header{
         { "Content-Type", "application/json" },
@@ -579,9 +593,7 @@ inline bool PassportQRCall(const std::string_view passportQrUrl,
         std::string(std::string_view(api::mhy::passport::confirm_qr_login)) :
         std::string(std::string_view(api::mhy::passport::scan_qr_login));
 
-    auto& session = ThreadScanSession();
-    session.SetUrl(cpr::Url{ url });
-    session.SetHeader(cpr::Header{
+    const cpr::Header hdr{
         { "Content-Type", "application/json" },
         { "Accept", "application/json" },
         { "x-rpc-app_id", std::string(kPassportAppId) },
@@ -590,7 +602,16 @@ inline bool PassportQRCall(const std::string_view passportQrUrl,
         { "x-rpc-game_biz", "bbs_cn" },
         { "x-rpc-sdk_version", "2.16.0" },
         { "x-rpc-device_id", device_id },
-        { "Cookie", std::string(cookie) } });
+        { "Cookie", std::string(cookie) } };
+
+    // 关键：passport-api 必须用【独立于 api-sdk 的 curl 句柄】。
+    // curl 会对同一 easy handle 上属于 *.mihoyo.com 的主机做 HTTP/2 连接合并，
+    // 把 passport 的请求搭到 api-sdk 的 TLS 连接上，实测被后端判为无效会话，
+    // 表现为 step2 恒返回 retcode=-100（而用独立连接的脚本却能成功）。
+    // 2026-10-28 DSH 修正
+    auto& session = ThreadSessionFor("passport-api");
+    session.SetUrl(cpr::Url{ url });
+    session.SetHeader(hdr);
     session.SetBody(cpr::Body{ body });
     session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(15000) });
     session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
@@ -631,7 +652,32 @@ inline bool PassportQRCall(const std::string_view passportQrUrl,
         LogFlow("[" + phase + "] " + who + " retcode=" + std::to_string(retcode) +
                 " message=" + j.value("message", std::string{}) + extra);
     }
-    return retcode == 0;
+    if (retcode == 0)
+    {
+        return true;
+    }
+
+    // 兜底：复用会话失败时，用【全新句柄】（cpr::Post 会新建 easy handle，
+    // 不参与任何连接合并）重试一次。这一步既能在异常情况下救回本次抢码，
+    // 也把"复用会话 vs 独立连接"的差异直接写进日志，便于以后定位。
+    // 2026-10-28 DSH 添加
+    {
+        const auto f0 = std::chrono::steady_clock::now();
+        const auto fresh = cpr::Post(cpr::Url{ url }, hdr, cpr::Body{ body },
+                                     cpr::Timeout{ std::chrono::milliseconds(15000) },
+                                     cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+        const auto fus = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - f0)
+                             .count();
+        LogScanDiag(confirm ? "passport-confirm(fresh)" : "passport-scan(fresh)",
+                    url, fresh, static_cast<double>(fus) / 1000.0);
+        const auto fj = nlohmann::json::parse(fresh.text, nullptr, false);
+        const int frc = fj.is_discarded() ? -999 : fj.value("retcode", -1);
+        LogFlow("[" + phase + "] " + who + " 独立连接重试 retcode=" + std::to_string(frc) +
+                " message=" +
+                (fj.is_discarded() ? std::string("<非JSON>") : fj.value("message", std::string{})));
+        return frc == 0;
+    }
 }
 
 // 候选 Cookie 列表（2026-10-26 DSH 添加）
@@ -723,7 +769,7 @@ inline bool ScanQRLogin(const std::string_view url, const std::string_view ticke
         { "ticket", ticket } }
                                 .dump() };
 
-    auto& session = ThreadScanSession();
+    auto& session = ThreadSessionFor("api-sdk");
     session.SetUrl(cpr::Url{ std::string(url) });
     session.SetHeader(cpr::Header{ { "Content-Type", "application/json" } });
     session.SetBody(cpr::Body{ body });
@@ -761,7 +807,7 @@ inline bool ConfirmQRLogin(const std::string_view url, const std::string_view ui
         { "payload", { { "proto", "Account" }, { "raw", nlohmann::json{ { "uid", uid }, { "token", gameToken } }.dump() } } } }
                                 .dump() };
 
-    auto& session = ThreadScanSession();
+    auto& session = ThreadSessionFor("api-sdk");
     session.SetUrl(cpr::Url{ std::string(url) });
     session.SetHeader(cpr::Header{ { "Content-Type", "application/json" } });
     session.SetBody(cpr::Body{ body });
