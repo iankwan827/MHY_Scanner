@@ -508,6 +508,9 @@ inline std::string PandaScanQRCode(const std::string_view url,
     session.SetUrl(cpr::Url{ std::string(url) });
     session.SetHeader(cpr::Header{
         { "Content-Type", "application/json" },
+        // 必须带高仿客户端 UA：不带时 cpr 会发 curl/x.y，风控可能直接拒
+        //（2026-10-28 DSH 补充）
+        { "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) miHoYoBBS/2.76.1" },
         { "x-rpc-app_id", std::string(kPassportAppId) },
         { "x-rpc-device_id", device_id } });
     session.SetBody(cpr::Body{ body });
@@ -596,6 +599,9 @@ inline bool PassportQRCall(const std::string_view passportQrUrl,
     const cpr::Header hdr{
         { "Content-Type", "application/json" },
         { "Accept", "application/json" },
+        // 必须带高仿客户端 UA（2026-10-28 DSH 补充）：
+        // 缺 UA 时 cpr 会发 curl/x.y，passport 侧风控会判会话无效（-100）。
+        { "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) miHoYoBBS/2.76.1" },
         { "x-rpc-app_id", std::string(kPassportAppId) },
         { "x-rpc-app_version", "2.76.1" },
         { "x-rpc-client_type", "2" },
