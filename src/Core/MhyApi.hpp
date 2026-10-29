@@ -381,8 +381,9 @@ inline void WarmupScanConnectionThrottled(
         return;
     }
     last = now;
+    // 只预热 api-sdk：passport 侧改用独立连接（每次新建句柄），
+    // 预热来的连接不会被复用，反而是多余请求。2026-10-29 DSH 调整
     WarmupScanConnection(kScanWarmupUrl);
-    WarmupScanConnection(kPassportWarmupUrl);
 }
 
 // 抢码诊断日志（2026-10-25 DSH 添加）
@@ -610,20 +611,16 @@ inline bool PassportQRCall(const std::string_view passportQrUrl,
         { "x-rpc-device_id", device_id },
         { "Cookie", std::string(cookie) } };
 
-    // 关键：passport-api 必须用【独立于 api-sdk 的 curl 句柄】。
-    // curl 会对同一 easy handle 上属于 *.mihoyo.com 的主机做 HTTP/2 连接合并，
-    // 把 passport 的请求搭到 api-sdk 的 TLS 连接上，实测被后端判为无效会话，
-    // 表现为 step2 恒返回 retcode=-100（而用独立连接的脚本却能成功）。
-    // 2026-10-28 DSH 修正
-    auto& session = ThreadSessionFor("passport-api");
-    session.SetUrl(cpr::Url{ url });
-    session.SetHeader(hdr);
-    session.SetBody(cpr::Body{ body });
-    session.SetTimeout(cpr::Timeout{ std::chrono::milliseconds(15000) });
-    session.SetConnectTimeout(cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
-
+    // 2026-10-29 实测结论（MHY_flow.log 与 scan_error 对照）：
+    //   复用长会话:  passport-scan 60.9ms / confirm 112.2ms  → 恒返回 -100
+    //   独立新连接:  passport-scan 1376ms  / confirm 262.6ms  → 恒返回 0
+    // 两次调用无一例外，所以这里【直接用 cpr::Post 新建句柄】，
+    // 不再先试长会话（那一次注定失败、白花 60~110ms，还把日志搅乱）。
+    // 推测长会话在多次 SetHeader 后会把请求头叠加（重复 Cookie 判无效）。
     const auto t0 = std::chrono::steady_clock::now();
-    const auto response = session.Post();
+    const auto response = cpr::Post(cpr::Url{ url }, hdr, cpr::Body{ body },
+                                    cpr::Timeout{ std::chrono::milliseconds(15000) },
+                                    cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
     const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - t0)
                         .count();
@@ -663,23 +660,22 @@ inline bool PassportQRCall(const std::string_view passportQrUrl,
         return true;
     }
 
-    // 兜底：复用会话失败时，用【全新句柄】（cpr::Post 会新建 easy handle，
-    // 不参与任何连接合并）重试一次。这一步既能在异常情况下救回本次抢码，
-    // 也把"复用会话 vs 独立连接"的差异直接写进日志，便于以后定位。
-    // 2026-10-28 DSH 添加
+    // 兜底：主请求已经用独立连接，这里再重试一次，只为应对网络抖动/瞬时错误。
+    // （原先是"长会话失败→独立连接重试"，现在主路径就是独立连接，语义改为二次尝试）
+    // 2026-10-29 DSH 调整
     {
         const auto f0 = std::chrono::steady_clock::now();
-        const auto fresh = cpr::Post(cpr::Url{ url }, hdr, cpr::Body{ body },
-                                     cpr::Timeout{ std::chrono::milliseconds(15000) },
-                                     cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
+        const auto retryResp = cpr::Post(cpr::Url{ url }, hdr, cpr::Body{ body },
+                                         cpr::Timeout{ std::chrono::milliseconds(15000) },
+                                         cpr::ConnectTimeout{ std::chrono::milliseconds(5000) });
         const auto fus = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - f0)
                              .count();
-        LogScanDiag(confirm ? "passport-confirm(fresh)" : "passport-scan(fresh)",
-                    url, fresh, static_cast<double>(fus) / 1000.0);
-        const auto fj = nlohmann::json::parse(fresh.text, nullptr, false);
+        LogScanDiag(confirm ? "passport-confirm(retry)" : "passport-scan(retry)",
+                    url, retryResp, static_cast<double>(fus) / 1000.0);
+        const auto fj = nlohmann::json::parse(retryResp.text, nullptr, false);
         const int frc = fj.is_discarded() ? -999 : fj.value("retcode", -1);
-        LogFlow("[" + phase + "] " + who + " 独立连接重试 retcode=" + std::to_string(frc) +
+        LogFlow("[" + phase + "] " + who + " 二次重试 retcode=" + std::to_string(frc) +
                 " message=" +
                 (fj.is_discarded() ? std::string("<非JSON>") : fj.value("message", std::string{})));
         return frc == 0;
